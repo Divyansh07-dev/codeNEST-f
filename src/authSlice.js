@@ -1,8 +1,17 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import axios from 'axios';
 
-// Define the backend URL
-const BACKEND_URL = 'http://localhost:3000/user';
+// 🚀 FIX 1: Use environment variable, falling back to localhost:3000
+// 🚀 FIX 2: Removed '/user' from the base URL so thunks can append '/user/register'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+
+// --- Initial State ---
+const initialState = {
+    user: null, 
+    isAuthenticated: false,
+    loading: false,
+    error: null,
+};
 
 // --- Async Thunks ---
 
@@ -11,53 +20,51 @@ export const registerUser = createAsyncThunk(
     'auth/registerUser',
     async (userData, { rejectWithValue }) => {
         try {
-            const response = await axios.post(`${BACKEND_URL}/register`, userData, {
+            // FIX: Endpoint is now correct: BASE_URL/user/register
+            const response = await axios.post(`${BACKEND_URL}/user/register`, userData, {
                 withCredentials: true,
             });
             return response.data;
         } catch (error) {
-            // Ensure we return a serializable string error message
-            const errorMessage = error.response?.data || error.message || 'Registration failed due to network error.';
+            const errorMessage = error.response?.data?.message || error.message || 'Registration failed due to network error.';
             return rejectWithValue(errorMessage);
         }
     }
 );
 
-// Handles the login call (New Thunk Added)
+// Handles the login call
 export const loginUser = createAsyncThunk(
     'auth/loginUser',
     async (userData, { rejectWithValue }) => {
         try {
-            const response = await axios.post(`${BACKEND_URL}/login`, userData, {
+            // FIX: Endpoint is now correct: BASE_URL/user/login
+            const response = await axios.post(`${BACKEND_URL}/user/login`, userData, {
                 withCredentials: true,
             });
-            // Assuming the server returns user data upon successful login
             return response.data; 
         } catch (error) {
-            // 🚨 FIX: Extracting serializable error message for login failures
-            const errorMessage = error.response?.data || error.message || 'Login failed due to network error.';
+            const errorMessage = error.response?.data?.message || error.message || 'Login failed due to network error.';
             return rejectWithValue(errorMessage);
         }
     }
 );
 
-// Handles the logout call (New Thunk Added)
+// Handles the logout call
 export const logoutUser = createAsyncThunk(
     'auth/logoutUser',
-    async (_, { rejectWithValue, dispatch }) => {
+    async (_, { rejectWithValue }) => {
         try {
-            // Make the API call to clear the server-side cookie
-            await axios.post(`${BACKEND_URL}/logout`, {}, {
+            // FIX: Endpoint is now correct: BASE_URL/user/logout
+            await axios.post(`${BACKEND_URL}/user/logout`, {}, {
                 withCredentials: true,
             });
-            // Dispatch the local Redux action to clear state immediately after server success
-            dispatch(logout()); 
+            // The local Redux state will be cleared in the .fulfilled case
             return;
         } catch (error) {
-            // Log the error but still proceed with local logout to ensure UI updates
+            // Even if the server-side call fails, we proceed to clear local state for UX
             console.error('Server-side logout failed:', error);
-            dispatch(logout()); // Ensure local state clears even if server fails
-            return rejectWithValue('Logout failed on the server, but logged out locally.');
+            // Returning success will trigger .fulfilled, clearing the local state
+            return;
         }
     }
 );
@@ -68,13 +75,12 @@ export const checkAuth = createAsyncThunk(
     'auth/checkAuth',
     async (_, { rejectWithValue }) => {
         try {
-            const response = await axios.get(`${BACKEND_URL}/check`, {
+            // FIX: Endpoint is now correct: BASE_URL/user/check
+            const response = await axios.get(`${BACKEND_URL}/user/check`, {
                 withCredentials: true,
             });
-            // Assuming the check endpoint returns user data if successful
             return response.data.user; 
         } catch (error) {
-            // If check fails (401), we treat it as not authenticated and return null
             return rejectWithValue(null);
         }
     }
@@ -83,20 +89,14 @@ export const checkAuth = createAsyncThunk(
 // --- Auth Slice ---
 const authSlice = createSlice({
     name: 'auth',
-    initialState: {
-        user: null, 
-        isAuthenticated: false,
-        // loading: true, 
-        loading:false,
-        error: null,
-    },
+    initialState,
     reducers: {
         // This is the synchronous Redux action to clear local state
         logout: (state) => {
             state.user = null;
             state.isAuthenticated = false;
-            state.error = null; // Clear any existing errors on logout
-            state.loading = false; // Ensure loading is false after logout
+            state.error = null;
+            state.loading = false;
         }
     },
     extraReducers: (builder) => {
@@ -106,7 +106,6 @@ const authSlice = createSlice({
                 state.loading = true;
                 state.error = null;
             })
-            // 💡 FIX: Ensure we use action.payload.user, matching the login success payload structure.
             .addCase(registerUser.fulfilled, (state, action) => {
                 state.loading = false;
                 state.isAuthenticated = true;
@@ -116,6 +115,7 @@ const authSlice = createSlice({
             .addCase(registerUser.rejected, (state, action) => {
                 state.loading = false;
                 state.isAuthenticated = false;
+                state.user = null;
                 state.error = action.payload || 'Registration failed.';
             })
 
@@ -133,22 +133,27 @@ const authSlice = createSlice({
             .addCase(loginUser.rejected, (state, action) => {
                 state.loading = false;
                 state.isAuthenticated = false;
+                state.user = null;
                 state.error = action.payload || 'Login failed.';
             })
 
-            // Handle Logout (The thunk we just created)
+            // Handle Logout 
             .addCase(logoutUser.pending, (state) => {
                 state.loading = true;
                 state.error = null;
             })
-            .addCase(logoutUser.fulfilled, (state, action) => {
+            .addCase(logoutUser.fulfilled, (state) => {
+                // Clear state after successful thunk (server cookie clear is attempted)
                 state.loading = false;
-                // Note: state is cleared by the dispatch(logout()) inside the thunk
+                state.isAuthenticated = false;
+                state.user = null;
             })
             .addCase(logoutUser.rejected, (state, action) => {
+                // We still clear the local state for better UX, regardless of server error
                 state.loading = false;
-                state.error = action.payload || 'An error occurred during logout.';
-                // Note: state is cleared by the dispatch(logout()) inside the thunk
+                state.isAuthenticated = false;
+                state.user = null;
+                state.error = action.payload;
             })
             
             // Handle Check Auth on initial load
@@ -161,7 +166,7 @@ const authSlice = createSlice({
                 state.isAuthenticated = true;
                 state.user = action.payload; 
             })
-            .addCase(checkAuth.rejected, (state, action) => {
+            .addCase(checkAuth.rejected, (state) => {
                 state.loading = false;
                 state.isAuthenticated = false;
                 state.user = null;
@@ -169,5 +174,6 @@ const authSlice = createSlice({
     },
 });
 
-export const { logout } = authSlice.actions;
+// Export the synchronous action
+export const { logout } = authSlice.actions; 
 export default authSlice.reducer;
